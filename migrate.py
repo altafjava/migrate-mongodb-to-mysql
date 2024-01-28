@@ -65,7 +65,22 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
     values_tuple = tuple(str(value) for value in document.values())
     # Print the SQL statement with actual values
     print(sql % values_tuple)
-    mysql_cursor.execute(sql, values_tuple)
+    try:
+        mysql_cursor.execute(sql, values_tuple)
+    except pymysql.err.DataError as e:
+        print("exception=", e)
+        # If a Data Too Long error occurs, increase the length of the affected field
+        if 'Data too long' in str(e):
+            field = re.search(r"'(.+)'", str(e)).group(1)
+            # Get the current length of the field
+            mysql_cursor.execute(f"SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{collection_name}' AND COLUMN_NAME = '{field}'")
+            current_length = mysql_cursor.fetchone()[0]
+            # Double the current length
+            new_length = current_length * 2
+            # Alter the table to increase the length of the field
+            mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({new_length})")
+            # Try the insert statement again
+            mysql_cursor.execute(sql, values_tuple)
 
 # Connect to MongoDB
 mongo_client = pymongo.MongoClient(mongo_db_url)
