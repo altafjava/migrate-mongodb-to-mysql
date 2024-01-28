@@ -4,6 +4,14 @@ import re
 from bson.objectid import ObjectId
 from datetime import datetime
 
+# Database credentials
+mongo_db_url = "mongodb://localhost:27017/"
+mongo_db_name = "stock-market"
+mysql_db_host = 'localhost'
+mysql_db_user = 'root'
+mysql_db_password = 'mysql'
+mysql_db_name = 'sm'
+
 def camel_to_snake(name):
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
@@ -59,40 +67,35 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
     print(sql % values_tuple)
     mysql_cursor.execute(sql, values_tuple)
 
-# Database name
-db_name = 'sm'
-
-# Connect to MySQL
-mysql_conn = pymysql.connect(host='localhost', user='root', password='mysql')
-mysql_cursor = mysql_conn.cursor()
-
-# Drop the database if it exists
-mysql_cursor.execute(f"DROP DATABASE IF EXISTS {db_name}")
-# Create the database
-mysql_cursor.execute(f"CREATE DATABASE {db_name}")
-# Use the database
-mysql_cursor.execute(f"USE {db_name}")
-
 # Connect to MongoDB
-mongo_client = pymongo.MongoClient("mongodb://localhost:27017/")
-mongo_db = mongo_client["stock-market"]
+mongo_client = pymongo.MongoClient(mongo_db_url)
+mongo_db = mongo_client[mongo_db_name]
 
-# Iterate over all collections in MongoDB
-for collection_name in mongo_db.list_collection_names():
-    print('\n\ncollection_name=', collection_name)
-    collection = mongo_db[collection_name]
-    # Get the structure of the collection
-    document = collection.find_one()
-    # Create a table in MySQL based on the collection's structure
-    create_mysql_table(mysql_cursor, collection_name, document)
-    # Insert data from MongoDB to MySQL
-    for document in collection.find():
-        insert_into_mysql(mysql_cursor, collection_name, document)
+# Use a context manager to handle the MySQL database connection
+with pymysql.connect(host=mysql_db_host, user=mysql_db_user, password=mysql_db_password) as mysql_conn:
+    mysql_cursor = mysql_conn.cursor()
 
-# Commit the transaction
-mysql_conn.commit()
+    # Drop the database if it exists
+    mysql_cursor.execute(f"DROP DATABASE IF EXISTS {mysql_db_name}")
+    # Create the database
+    mysql_cursor.execute(f"CREATE DATABASE {mysql_db_name}")
+    # Use the database
+    mysql_cursor.execute(f"USE {mysql_db_name}")
 
-# Close the connections
-mysql_cursor.close()
-mysql_conn.close()
+    # Iterate over all collections in MongoDB
+    for collection_name in mongo_db.list_collection_names():
+        print('\n\ncollection_name=', collection_name)
+        collection = mongo_db[collection_name]
+        # Get the structure of the collection
+        document = collection.find_one()
+        # Create a table in MySQL based on the collection's structure
+        create_mysql_table(mysql_cursor, collection_name, document)
+        # Insert data from MongoDB to MySQL
+        for document in collection.find():
+            insert_into_mysql(mysql_cursor, collection_name, document)
+
+    # Commit the transaction
+    mysql_conn.commit()
+
+# Close the MongoDB connection
 mongo_client.close()
