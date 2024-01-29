@@ -36,6 +36,9 @@ def type_to_mysql(py_type, max_length=None):
     else:
         return 'VARCHAR(255)'
 
+def enquote(identifier):
+    return f"`{identifier}`"
+
 def create_mysql_table(mysql_cursor, collection_name, document):
     # Convert collection_name to snake_case
     collection_name = camel_to_snake(collection_name)
@@ -46,8 +49,8 @@ def create_mysql_table(mysql_cursor, collection_name, document):
     structure = {camel_to_snake(key): type_to_mysql(type(value).__name__, max_lengths.get(camel_to_snake(key))) for key, value in document.items() if key not in ['_id', '_class']}
 
     # Create the MySQL table based on the adjusted structure
-    columns = ', '.join([f'{key} {structure[key]}' for key in structure.keys()])
-    sql = f"CREATE TABLE {collection_name} (id INT AUTO_INCREMENT PRIMARY KEY, {columns})"
+    columns = ', '.join([f'{enquote(key)} {structure[key]}' for key in structure.keys()])
+    sql = f"CREATE TABLE {enquote(collection_name)} (id INT AUTO_INCREMENT PRIMARY KEY, {columns})"
     print(sql,'\n')  # Print the SQL statement
     mysql_cursor.execute(sql)
 
@@ -56,13 +59,16 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
     collection_name = camel_to_snake(collection_name)
     # Remove _id and _class from the document and convert keys to snake_case
     document = {camel_to_snake(key): value for key, value in document.items() if key not in ['_id', '_class']}
-    keys = ', '.join(document.keys())
+    # keys = ', '.join(document.keys())
+    keys = ', '.join(enquote(key) for key in document.keys())
     values = ', '.join(['%s' for _ in document.values()])
-    sql = f"INSERT INTO {collection_name} ({keys}) VALUES ({values})"
+    # sql = f"INSERT INTO {collection_name} ({keys}) VALUES ({values})"
+    sql = f"INSERT INTO {enquote(collection_name)} ({keys}) VALUES ({values})"
     # Convert values to a tuple to use with execute
     values_tuple = tuple(str(value) for value in document.values())
+    quoted_values_tuple = tuple(f"'{value}'" if isinstance(value, str) else value for value in values_tuple)
     # Print the SQL statement with actual values
-    print(sql % values_tuple)
+    print(sql % quoted_values_tuple)
     while True:
         try:
             mysql_cursor.execute(sql, values_tuple)
