@@ -65,22 +65,34 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
     values_tuple = tuple(str(value) for value in document.values())
     # Print the SQL statement with actual values
     print(sql % values_tuple)
-    try:
-        mysql_cursor.execute(sql, values_tuple)
-    except pymysql.err.DataError as e:
-        print("exception=", e)
-        # If a Data Too Long error occurs, increase the length of the affected field
-        if 'Data too long' in str(e):
-            field = re.search(r"'(.+)'", str(e)).group(1)
-            # Get the current length of the field
-            mysql_cursor.execute(f"SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{collection_name}' AND COLUMN_NAME = '{field}'")
-            current_length = mysql_cursor.fetchone()[0]
-            # Double the current length
-            new_length = current_length * 2
-            # Alter the table to increase the length of the field
-            mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({new_length})")
-            # Try the insert statement again
+    while True:
+        try:
             mysql_cursor.execute(sql, values_tuple)
+            break  # Success, exit the loop
+        except pymysql.err.OperationalError as e:
+            if 'Unknown column' in str(e):
+                # Handle multiple missing fields
+                missing_fields = re.findall(r"Unknown column '([^']+)'", str(e))
+                # print("missing_fields=", missing_fields)
+                for field in missing_fields:
+                    field_type = type_to_mysql(type(document[field]).__name__)
+                    # print("field=", field, "field_type=", field_type)
+                    mysql_cursor.execute(f"ALTER TABLE {collection_name} ADD COLUMN {field} {field_type}")
+            else:
+                raise
+        except pymysql.err.DataError as e:
+            # If a Data Too Long error occurs, increase the length of the affected field
+            if 'Data too long' in str(e):
+                field = re.search(r"'(.+)'", str(e)).group(1)
+                # Get the current length of the field
+                mysql_cursor.execute(f"SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{collection_name}' AND COLUMN_NAME = '{field}'")
+                current_length = mysql_cursor.fetchone()[0]
+                # Double the current length
+                new_length = current_length * 2
+                # Alter the table to increase the length of the field
+                mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({new_length})")
+                # Try the insert statement again
+                mysql_cursor.execute(sql, values_tuple)
 
 # Connect to MongoDB
 mongo_client = pymongo.MongoClient(mongo_db_url)
@@ -99,7 +111,7 @@ with pymysql.connect(host=mysql_db_host, user=mysql_db_user, password=mysql_db_p
 
     # Iterate over all collections in MongoDB
     for collection_name in mongo_db.list_collection_names():
-        print('\n\ncollection_name=', collection_name)
+        print('\ncollection_name=', collection_name)
         collection = mongo_db[collection_name]
         # Get the structure of the collection
         document = collection.find_one()
