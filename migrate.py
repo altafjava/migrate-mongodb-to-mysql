@@ -1,8 +1,6 @@
 import pymongo
 import pymysql
 import re
-from bson.objectid import ObjectId
-from datetime import datetime
 
 # Database credentials
 mongo_db_url = "mongodb://localhost:27017/"
@@ -12,17 +10,17 @@ mysql_db_user = 'root'
 mysql_db_password = 'mysql'
 mysql_db_name = 'sm'
 
+DEFAULT_VARCHAR_SIZE = 25
+MAX_VARCHAR_LENGTH = 1000
+
 def camel_to_snake(name):
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
 
 def type_to_mysql(py_type, max_length=None):
     if py_type == 'str':
-        if max_length is None:
-            return 'VARCHAR(255)'
-        else:
-            varchar_size = min(max(50, (max_length // 50 + 1) * 50), 1000)
-            return f'VARCHAR({varchar_size})' if varchar_size <= 1000 else 'TEXT'
+        varchar_size = min(max(DEFAULT_VARCHAR_SIZE, (max_length // DEFAULT_VARCHAR_SIZE + 1) * DEFAULT_VARCHAR_SIZE), MAX_VARCHAR_LENGTH)
+        return f'VARCHAR({varchar_size})' if varchar_size <= MAX_VARCHAR_LENGTH else 'TEXT'
     elif py_type == 'int':
         return 'INT'
     elif py_type == 'float':
@@ -73,10 +71,9 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
             if 'Unknown column' in str(e):
                 # Handle multiple missing fields
                 missing_fields = re.findall(r"Unknown column '([^']+)'", str(e))
-                # print("missing_fields=", missing_fields)
                 for field in missing_fields:
-                    field_type = type_to_mysql(type(document[field]).__name__)
-                    # print("field=", field, "field_type=", field_type)
+                    field_length = len(str(document[field]))
+                    field_type = type_to_mysql(type(document[field]).__name__, field_length)
                     mysql_cursor.execute(f"ALTER TABLE {collection_name} ADD COLUMN {field} {field_type}")
             else:
                 raise
@@ -89,10 +86,14 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
                 current_length = mysql_cursor.fetchone()[0]
                 # Double the current length
                 new_length = current_length * 2
-                # Alter the table to increase the length of the field
-                mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({new_length})")
-                # Try the insert statement again
-                mysql_cursor.execute(sql, values_tuple)
+                if new_length > MAX_VARCHAR_LENGTH:
+                    # Modify the field to TEXT if it reaches MAX_VARCHAR_LENGTH
+                    mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} TEXT")
+                else:
+                    # Alter the table to increase the length of the field
+                    mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({new_length})")
+            else:
+                raise
 
 # Connect to MongoDB
 mongo_client = pymongo.MongoClient(mongo_db_url)
