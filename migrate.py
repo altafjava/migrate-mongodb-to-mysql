@@ -59,10 +59,12 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
     collection_name = camel_to_snake(collection_name)
     # Remove _id and _class from the document and convert keys to snake_case
     document = {camel_to_snake(key): value for key, value in document.items() if key not in ['_id', '_class']}
-    # keys = ', '.join(document.keys())
+    # Convert boolean values to 0 or 1
+    for key, value in document.items():
+        if isinstance(value, bool):
+            document[key] = 1 if value else 0
     keys = ', '.join(enquote(key) for key in document.keys())
     values = ', '.join(['%s' for _ in document.values()])
-    # sql = f"INSERT INTO {collection_name} ({keys}) VALUES ({values})"
     sql = f"INSERT INTO {enquote(collection_name)} ({keys}) VALUES ({values})"
     # Convert values to a tuple to use with execute
     values_tuple = tuple(str(value) for value in document.values())
