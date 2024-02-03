@@ -8,7 +8,7 @@ mongo_db_name = "stock-market"
 mysql_db_host = 'localhost'
 mysql_db_user = 'root'
 mysql_db_password = 'mysql'
-mysql_db_name = 'sm'
+mysql_db_name = 'Stock-Market' # It will be converted to stock_market
 
 DEFAULT_VARCHAR_SIZE = 25
 MAX_VARCHAR_LENGTH = 1000
@@ -110,7 +110,7 @@ mongo_db = mongo_client[mongo_db_name]
 # Use a context manager to handle the MySQL database connection
 with pymysql.connect(host=mysql_db_host, user=mysql_db_user, password=mysql_db_password) as mysql_conn:
     mysql_cursor = mysql_conn.cursor()
-
+    mysql_db_name = mysql_db_name.replace('-', '_')
     # Drop the database if it exists
     mysql_cursor.execute(f"DROP DATABASE IF EXISTS {mysql_db_name}")
     # Create the database
