@@ -1,6 +1,9 @@
 import pymongo
 import pymysql
 import re
+import json
+from bson.objectid import ObjectId
+from datetime import datetime
 
 # Database credentials
 mongo_db_url = "mongodb://localhost:27017/"
@@ -17,7 +20,7 @@ def camel_to_snake(name):
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
 
-def type_to_mysql(py_type, max_length=None):
+def type_to_mysql(column_name, py_type, max_length):
     if py_type == 'str':
         varchar_size = min(max(DEFAULT_VARCHAR_SIZE, (max_length // DEFAULT_VARCHAR_SIZE + 1) * DEFAULT_VARCHAR_SIZE), MAX_VARCHAR_LENGTH)
         return f'VARCHAR({varchar_size})' if varchar_size <= MAX_VARCHAR_LENGTH else 'TEXT'
@@ -33,20 +36,76 @@ def type_to_mysql(py_type, max_length=None):
         return 'DATETIME'
     elif py_type == 'Int64':
         return 'BIGINT'
+    elif py_type == 'Decimal128':
+        return 'DECIMAL(38, 30)' 
+    elif py_type == 'list':
+        return 'TEXT'  # Lists are serialized as JSON strings
+    elif py_type == 'bytes':
+        return 'BLOB'
+    elif py_type == 'NoneType':
+        return 'TEXT'
+    elif py_type == 're.Pattern':
+        return 'TEXT'  # Regular expressions can be stored as text
     else:
         return 'VARCHAR(255)'
+
+# Convert the document to a MySQL-friendly format
+def convert_document(document, prefix=''):
+    new_document = {}
+    for key, value in document.items():
+        new_key = f"{prefix}_{key}" if prefix else key
+        # Handle ObjectId
+        if isinstance(value, ObjectId):
+            new_document[new_key] = str(value)
+        # Handle Date
+        elif isinstance(value, datetime):
+            new_document[new_key] = value.strftime('%Y-%m-%d %H:%M:%S')
+        # Handle Array
+        elif isinstance(value, list):
+             # Serialize the list as a JSON string
+            new_document[new_key] = json.dumps(value, default=str)
+        # Handle Nested Document
+        elif isinstance(value, dict):
+            new_document.update(convert_document(value, new_key))
+        # Handle Null
+        elif value is None:
+            new_document[new_key] = 'NULL'
+        # Handle Boolean
+        elif isinstance(value, bool):
+            new_document[new_key] = 1 if value else 0
+        # Handle all other types
+        else:
+            new_document[new_key] = value
+    return new_document
 
 def enquote(identifier):
     return f"`{identifier}`"
 
 def create_mysql_table(mysql_cursor, collection_name, document):
-    # Convert collection_name to snake_case
     collection_name = camel_to_snake(collection_name)
+    
+    def process_nested_document(doc, prefix=''):
+        structure = {}
+        for key, value in doc.items():
+            new_key = f"{prefix}_{camel_to_snake(key)}" if prefix else camel_to_snake(key)
+            if isinstance(value, dict):
+                structure.update(process_nested_document(value, new_key))
+            else:
+                max_length = len(str(value))
+                structure[new_key] = type_to_mysql(new_key, type(value).__name__, max_length)
+        return structure
+
     # Determine the maximum length of each field in the document
     max_lengths = {camel_to_snake(key): len(str(value)) for key, value in document.items() if key not in ['_id', '_class']}
 
     # Adjust the structure based on the maximum lengths
-    structure = {camel_to_snake(key): type_to_mysql(type(value).__name__, max_lengths.get(camel_to_snake(key))) for key, value in document.items() if key not in ['_id', '_class']}
+    structure = {}
+    for key, value in document.items():
+        if key not in ['_id', '_class']:
+            if isinstance(value, dict):
+                structure.update(process_nested_document(value, camel_to_snake(key)))
+            else:
+                structure[camel_to_snake(key)] = type_to_mysql(camel_to_snake(key), type(value).__name__, max_lengths.get(camel_to_snake(key)))
 
     # Create the MySQL table based on the adjusted structure
     columns = ', '.join([f'{enquote(key)} {structure[key]}' for key in structure.keys()])
@@ -55,14 +114,11 @@ def create_mysql_table(mysql_cursor, collection_name, document):
     mysql_cursor.execute(sql)
 
 def insert_into_mysql(mysql_cursor, collection_name, document):
-    # Convert collection_name to snake_case
     collection_name = camel_to_snake(collection_name)
     # Remove _id and _class from the document and convert keys to snake_case
     document = {camel_to_snake(key): value for key, value in document.items() if key not in ['_id', '_class']}
-    # Convert boolean values to 0 or 1
-    for key, value in document.items():
-        if isinstance(value, bool):
-            document[key] = 1 if value else 0
+    # Convert the document to a MySQL-friendly format
+    document = convert_document(document)
     keys = ', '.join(enquote(key) for key in document.keys())
     values = ', '.join(['%s' for _ in document.values()])
     sql = f"INSERT INTO {enquote(collection_name)} ({keys}) VALUES ({values})"
@@ -81,7 +137,8 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
                 missing_fields = re.findall(r"Unknown column '([^']+)'", str(e))
                 for field in missing_fields:
                     field_length = len(str(document[field]))
-                    field_type = type_to_mysql(type(document[field]).__name__, field_length)
+                    mongo_type =  type(document[field]).__name__
+                    field_type = type_to_mysql(field, mongo_type, field_length)
                     mysql_cursor.execute(f"ALTER TABLE {collection_name} ADD COLUMN {field} {field_type}")
             else:
                 raise
@@ -89,17 +146,24 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
             # If a Data Too Long error occurs, increase the length of the affected field
             if 'Data too long' in str(e):
                 field = re.search(r"'(.+)'", str(e)).group(1)
-                # Get the current length of the field
-                mysql_cursor.execute(f"SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{collection_name}' AND COLUMN_NAME = '{field}'")
-                current_length = mysql_cursor.fetchone()[0]
-                # Double the current length
-                new_length = current_length * 2
-                if new_length > MAX_VARCHAR_LENGTH:
-                    # Modify the field to TEXT if it reaches MAX_VARCHAR_LENGTH
-                    mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} TEXT")
+                # Get the current data type and length of the field
+                mysql_cursor.execute(f"SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{collection_name}' AND COLUMN_NAME = '{field}'")
+                current_type, current_length = mysql_cursor.fetchone()
+                # Decide the new type and length based on the current type and length
+                if current_type == 'varchar':
+                    new_length = current_length * 2
+                    if new_length > MAX_VARCHAR_LENGTH:
+                        new_type = 'TEXT'
+                    else:
+                        new_type = f'VARCHAR({new_length})'
+                elif current_type == 'text':
+                    new_type = 'MEDIUMTEXT'
+                elif current_type == 'mediumtext':
+                    new_type = 'LONGTEXT'
                 else:
-                    # Alter the table to increase the length of the field
-                    mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({new_length})")
+                    raise ValueError(f"Cannot increase size of field {field} of type {current_type}")
+                # Alter the table to change the type of the field
+                mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} {new_type}")
             else:
                 raise
 
