@@ -20,6 +20,12 @@ def camel_to_snake(name):
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
 
+def isChildKeyPresentInValue(childKey, valueValues):
+    for value in valueValues:
+        if childKey==value:
+            return True
+    return False
+
 def type_to_mysql(column_name, py_type, max_length):
     if py_type == 'str':
         varchar_size = min(max(DEFAULT_VARCHAR_SIZE, (max_length // DEFAULT_VARCHAR_SIZE + 1) * DEFAULT_VARCHAR_SIZE), MAX_VARCHAR_LENGTH)
@@ -37,7 +43,7 @@ def type_to_mysql(column_name, py_type, max_length):
     elif py_type == 'Int64':
         return 'BIGINT'
     elif py_type == 'Decimal128':
-        return 'DECIMAL(38, 30)' 
+        return 'DECIMAL(38, 3)' 
     elif py_type == 'list':
         return 'TEXT'  # Lists are serialized as JSON strings
     elif py_type == 'bytes':
@@ -48,6 +54,74 @@ def type_to_mysql(column_name, py_type, max_length):
         return 'TEXT'  # Regular expressions can be stored as text
     else:
         return 'VARCHAR(255)'
+def process_nested_document(doc, prefix=''):
+    structure = {}
+    for childKey, value in doc.items():
+        if isinstance(value, dict):
+            valueValues = value.values()
+            if isChildKeyPresentInValue(childKey, valueValues):
+                valueKeys = value.keys()
+                for inner_key in valueKeys:
+                    new_key = f"{prefix}_{camel_to_snake(inner_key)}" if prefix else camel_to_snake(inner_key)
+                    innerKeyValue = value[inner_key]
+                    max_length = len(str(innerKeyValue))
+                    structure[new_key] = type_to_mysql(new_key, type(innerKeyValue).__name__, max_length)
+                    if isinstance(innerKeyValue, dict):
+                        structure.update(process_nested_document(value, new_key))
+            else:
+                # add the prefix here
+                new_key = f"{prefix}_{camel_to_snake(childKey)}" if prefix else camel_to_snake(childKey)
+                structure.update(process_nested_document(value, new_key))
+        else:
+            max_length = len(str(value))
+            new_key = f"{prefix}_{camel_to_snake(childKey)}" if prefix else camel_to_snake(childKey)
+            structure[new_key] = type_to_mysql(new_key, type(value).__name__, max_length)
+    return structure
+
+def convert_nested_document(doc, prefix=''):
+    new_document = {}
+    for childKey, doc in doc.items():
+        if isinstance(doc, dict):
+            valueValues = doc.values()
+            if isChildKeyPresentInValue(childKey, valueValues):
+                valueKeys=doc.keys()
+                for inner_key in valueKeys:
+                    new_key = f"{prefix}_{camel_to_snake(inner_key)}" if prefix else camel_to_snake(inner_key)
+                    innerKeyValue=doc[inner_key]
+                    if isinstance(innerKeyValue, ObjectId):
+                        new_document[new_key] = str(doc)
+                    elif isinstance(innerKeyValue, datetime):
+                        new_document[new_key] = doc.strftime('%Y-%m-%d %H:%M:%S')
+                    elif isinstance(innerKeyValue, list):
+                        new_document[new_key] = json.dumps(doc, default=str)
+                    elif isinstance(innerKeyValue, dict):
+                        new_document.update(convert_nested_document(innerKeyValue, new_key))
+                    elif doc is None:
+                        new_document[new_key] = 'NULL'
+                    elif isinstance(innerKeyValue, bool):
+                        new_document[new_key] = 1 if doc else 0
+                    else:
+                        new_document[new_key] = innerKeyValue
+            else:
+                new_key = f"{prefix}_{camel_to_snake(childKey)}" if prefix else camel_to_snake(childKey)
+                new_document.update(convert_nested_document(doc, new_key))
+        else:
+            new_key = f"{prefix}_{camel_to_snake(childKey)}" if prefix else camel_to_snake(childKey)
+            if isinstance(doc, ObjectId):
+                new_document[new_key] = str(doc)
+            elif isinstance(doc, datetime):
+                new_document[new_key] = doc.strftime('%Y-%m-%d %H:%M:%S')
+            elif isinstance(doc, list):
+                new_document[new_key] = json.dumps(doc, default=str)
+            elif isinstance(doc, dict):
+                new_document.update(convert_nested_document(doc, new_key))
+            elif doc is None:
+                new_document[new_key] = 'NULL'
+            elif isinstance(doc, bool):
+                new_document[new_key] = 1 if doc else 0
+            else:
+                new_document[new_key] = doc
+    return new_document
 
 # Convert the document to a MySQL-friendly format
 def convert_document(document, prefix=''):
@@ -66,7 +140,7 @@ def convert_document(document, prefix=''):
             new_document[new_key] = json.dumps(value, default=str)
         # Handle Nested Document
         elif isinstance(value, dict):
-            new_document.update(convert_document(value, new_key))
+            new_document.update(convert_nested_document(value, new_key))
         # Handle Null
         elif value is None:
             new_document[new_key] = 'NULL'
@@ -83,18 +157,6 @@ def enquote(identifier):
 
 def create_mysql_table(mysql_cursor, collection_name, document):
     collection_name = camel_to_snake(collection_name)
-    
-    def process_nested_document(doc, prefix=''):
-        structure = {}
-        for key, value in doc.items():
-            new_key = f"{prefix}_{camel_to_snake(key)}" if prefix else camel_to_snake(key)
-            if isinstance(value, dict):
-                structure.update(process_nested_document(value, new_key))
-            else:
-                max_length = len(str(value))
-                structure[new_key] = type_to_mysql(new_key, type(value).__name__, max_length)
-        return structure
-
     # Determine the maximum length of each field in the document
     max_lengths = {camel_to_snake(key): len(str(value)) for key, value in document.items() if key not in ['_id', '_class']}
 
@@ -107,9 +169,12 @@ def create_mysql_table(mysql_cursor, collection_name, document):
             else:
                 structure[camel_to_snake(key)] = type_to_mysql(camel_to_snake(key), type(value).__name__, max_lengths.get(camel_to_snake(key)))
 
+    column_definitions = []
     # Create the MySQL table based on the adjusted structure
-    columns = ', '.join([f'{enquote(key)} {structure[key]}' for key in structure.keys()])
-    sql = f"CREATE TABLE {enquote(collection_name)} (id INT AUTO_INCREMENT PRIMARY KEY, {columns})"
+    if "id" not in structure:
+        column_definitions.append("id INT AUTO_INCREMENT PRIMARY KEY")
+    column_definitions.extend([f'{enquote(key)} {structure[key]}' for key in structure.keys()])
+    sql = f"CREATE TABLE {enquote(collection_name)} ({', '.join(column_definitions)})"
     print(sql,'\n')  # Print the SQL statement
     mysql_cursor.execute(sql)
 
