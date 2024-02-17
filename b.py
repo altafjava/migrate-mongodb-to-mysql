@@ -6,6 +6,7 @@ import time
 from bson.objectid import ObjectId
 from datetime import datetime
 from config import mongo_config, mysql_config, mysql_db_name
+import traceback
 
 DEFAULT_VARCHAR_SIZE = 25
 MAX_VARCHAR_LENGTH = 1000
@@ -161,6 +162,14 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
                 else:
                     raise ValueError(f"Cannot increase size of field {field} of type {current_type}")
                 mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} {new_type}")
+            elif 'Data truncated' in str(e):
+                field = re.search(r"column '([^']+)'", str(e)).group(1)
+                mysql_cursor.execute(f"SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{collection_name}' AND COLUMN_NAME = '{field}'")
+                current_type = mysql_cursor.fetchone()[0].lower()
+                if current_type in ['int', 'float', 'double']:
+                    mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({DEFAULT_VARCHAR_SIZE})")
+                else:
+                    raise
             else:
                 raise
 
@@ -198,6 +207,7 @@ def main():
         total_time = round(end_time - start_time, 2)
         print(f"\n\n========= Total time taken to migrate: {total_time} seconds =========")
     except Exception as e:
+        traceback.print_exc(e)
         print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
