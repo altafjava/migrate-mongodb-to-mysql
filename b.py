@@ -12,6 +12,7 @@ DEFAULT_VARCHAR_SIZE = 25
 MAX_VARCHAR_LENGTH = 1000
 
 def camel_to_snake(name):
+    name = name.replace(' ', '_')
     name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
 
@@ -142,6 +143,12 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
                     mongo_type = type(document[field]).__name__
                     field_type = type_to_mysql(field, mongo_type, field_length)
                     mysql_cursor.execute(f"ALTER TABLE {collection_name} ADD COLUMN {field} {field_type}")
+            elif 'Incorrect datetime value' in str(e):
+                field = re.search(r"column '([^']+)'", str(e)).group(1)
+                value = re.search(r"'([^']+)'", str(e)).group(1)
+                value_length = len(value)
+                varchar_size = min(max(DEFAULT_VARCHAR_SIZE, (value_length // DEFAULT_VARCHAR_SIZE + 1) * DEFAULT_VARCHAR_SIZE), MAX_VARCHAR_LENGTH)
+                mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({varchar_size})")
             else:
                 raise
         except pymysql.err.DataError as e:
@@ -162,14 +169,9 @@ def insert_into_mysql(mysql_cursor, collection_name, document):
                 else:
                     raise ValueError(f"Cannot increase size of field {field} of type {current_type}")
                 mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} {new_type}")
-            elif 'Data truncated' in str(e):
+            elif 'Data truncated' in str(e) or 'Incorrect integer value' in str(e):
                 field = re.search(r"column '([^']+)'", str(e)).group(1)
-                mysql_cursor.execute(f"SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{collection_name}' AND COLUMN_NAME = '{field}'")
-                current_type = mysql_cursor.fetchone()[0].lower()
-                if current_type in ['int', 'float', 'double']:
-                    mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({DEFAULT_VARCHAR_SIZE})")
-                else:
-                    raise
+                mysql_cursor.execute(f"ALTER TABLE {collection_name} MODIFY {field} VARCHAR({DEFAULT_VARCHAR_SIZE})")
             else:
                 raise
 
@@ -208,7 +210,6 @@ def main():
         print(f"\n\n========= Total time taken to migrate: {total_time} seconds =========")
     except Exception as e:
         traceback.print_exc(e)
-        print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
     main()

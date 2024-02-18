@@ -5,10 +5,10 @@ mongo_config = {
     # 'db_name': 'sample_analytics',
     # 'db_name': 'sample_geospatial',
     'db_name': 'sample_guides',
-    # 'db_name': 'sample_mflix', # Error
+    # 'db_name': 'sample_mflix',
     # 'db_name': 'sample_restaurants',
     # 'db_name': 'sample_supplies',
-    # 'db_name': 'sample_training', # Error
+    # 'db_name': 'sample_training'
     # 'db_name': 'sample_weatherdata',
 }
 
