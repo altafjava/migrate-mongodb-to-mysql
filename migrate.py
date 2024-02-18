@@ -10,6 +10,8 @@ from config import mongo_config, mysql_config, mysql_db_name
 
 DEFAULT_VARCHAR_SIZE = 25
 MAX_VARCHAR_LENGTH = 1000
+SKIP_ID_FIELD = False
+SKIP_CLASS_FIELD = False
 
 def camel_to_snake(name):
     name = name.replace(' ', '_')
@@ -26,10 +28,9 @@ def enquote(identifier):
     return f"`{identifier}`"
 
 def type_to_mysql(column_name, py_type, max_length):
-    DEFAULT_VARCHAR_SIZE = 25
-    MAX_VARCHAR_LENGTH = 1000
+    varchar_type=f'VARCHAR({min(max(DEFAULT_VARCHAR_SIZE, (max_length // DEFAULT_VARCHAR_SIZE + 1) * DEFAULT_VARCHAR_SIZE), MAX_VARCHAR_LENGTH)})' if max_length and max_length <= MAX_VARCHAR_LENGTH else 'TEXT'
     type_mapping = {
-        'str': f'VARCHAR({min(max(DEFAULT_VARCHAR_SIZE, (max_length // DEFAULT_VARCHAR_SIZE + 1) * DEFAULT_VARCHAR_SIZE), MAX_VARCHAR_LENGTH)})' if max_length <= MAX_VARCHAR_LENGTH else 'TEXT',
+        'str': varchar_type,
         'int': 'INT',
         'float': 'FLOAT',
         'bool': 'BOOLEAN',
@@ -107,7 +108,7 @@ def create_mysql_table(mysql_cursor, collection_name, document):
     max_lengths = {camel_to_snake(key): len(str(value)) for key, value in document.items() if key not in ['_id', '_class']}
     structure = {}
     for key, value in document.items():
-        if key not in ['_id', '_class']:
+        if key not in ['_id', '_class'] or (key == '_id' and not SKIP_ID_FIELD) or (key == '_class' and not SKIP_CLASS_FIELD):
             if isinstance(value, dict):
                 structure.update(process_nested_document(value, camel_to_snake(key)))
             else:
@@ -123,7 +124,7 @@ def create_mysql_table(mysql_cursor, collection_name, document):
 
 def insert_into_mysql(mysql_cursor, collection_name, document):
     collection_name = camel_to_snake(collection_name)
-    document = {camel_to_snake(key): value for key, value in document.items() if key not in ['_id', '_class']}
+    document = {camel_to_snake(key): value for key, value in document.items() if key not in ['_id', '_class'] or (key == '_id' and not SKIP_ID_FIELD) or (key == '_class' and not SKIP_CLASS_FIELD)}
     document = convert_document(document)
     keys = ', '.join(enquote(key) for key in document.keys())
     values = ', '.join(['%s' for _ in document.values()])
