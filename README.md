@@ -19,20 +19,28 @@ Ensure that you have Python installed on your machine. You also need to have Mon
 
 ## Configuration
 
-Update the MongoDB and MySQL database credentials in the script:
+Update the MongoDB and MySQL database credentials in the `config.py` file:
 
 ```python
-mongo_db_url = "mongodb://localhost:27017/"
-mongo_db_name = "stock-market"
-mysql_db_host = 'localhost'
-mysql_db_user = 'root'
-mysql_db_password = 'mysql'
-mysql_db_name = 'sm'
+# Source Database Configuration
+mongo_config = {
+    'url': 'mongodb://localhost:27017/',
+    'db_name': 'sample_guides',
+}
+
+# Destination Database Configuration
+mysql_config = {
+    'host': 'localhost',
+    'user': 'root',
+    'password': 'mysql',
+}
+
+mysql_db_name = 'Test_DB-MySQL' # This will be converted to snake case(test_db_mysql)
 ```
 
 ## Usage
 Run the script with the following command:
-```pyhton
+```bash
 python migrate.py
 ```
 The script will connect to the MongoDB database, iterate over all collections, It then connects to the MySQL server, **drops the existing database if it exists**, and creates a new one. For each MongoDB collection, the script creates a corresponding table and column with **snake_case** names based on the MongoDB collections' structure, and insert data accordingly. It skips the `_id` and `_class` columns.
